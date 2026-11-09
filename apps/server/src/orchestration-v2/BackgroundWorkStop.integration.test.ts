@@ -42,7 +42,9 @@ const stopEarlierBackgroundWork = ({
   backgroundWorkAfterStop,
   stalledRun,
   workflowMember = false,
+  workspaceChange = false,
 }: {
+  readonly workspaceChange?: boolean;
   readonly wakeAfterStop?: boolean;
   readonly failedStart?: boolean;
   readonly backgroundWorkAfterStop?: "running" | "unknown";
@@ -267,6 +269,23 @@ const stopEarlierBackgroundWork = ({
             },
           ],
         });
+        if (workspaceChange) {
+          yield* orchestrator.dispatch({
+            type: "thread.metadata.update",
+            commandId: CommandId.make("worktree-handoff"),
+            threadId,
+            branch: "handoff",
+            worktreePath: `${cwd}-handoff`,
+            expectedWorktreePath: cwd,
+          });
+          yield* worker.drain();
+          const after = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(
+            after.turnItems.find((item) => item.id === devServerId)?.status,
+            "interrupted",
+          );
+          return;
+        }
         if (stalledRun !== undefined) {
           const before = yield* orchestrator.getThreadProjection(threadId);
           const run = before.runs[0]!;
@@ -1061,4 +1080,8 @@ it.effect.each(["missing-session-terminal", "returned-interrupt", "superseded-at
 
 it.effect("Stop holds a provider wake that queues before the stopped turn ends", () =>
   stopEarlierBackgroundWork({ wakeAfterStop: true }),
+);
+
+it.effect("a workspace change ends work running on the session it detaches", () =>
+  stopEarlierBackgroundWork({ workspaceChange: true }),
 );

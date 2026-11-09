@@ -4502,6 +4502,43 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           }),
         { concurrency: 1, discard: true },
       );
+      // A detached session reports nothing more, so work it was running would wait forever.
+      // A worktree handoff detaches the session that is mid-call in the handoff tool itself.
+      if (liveSessions.length > 0) {
+        const detachedSessionIds = new Set(liveSessions.map((session) => session.id));
+        const workProjection = yield* loadProjectionForCommand(
+          command,
+          ["providerThreads", "runs", "turnItems"],
+          { turnItemTypes: ["command_execution", "dynamic_tool"] },
+        );
+        const detachedProviderThreadIds = new Set(
+          workProjection.providerThreads
+            .filter(
+              (providerThread) =>
+                providerThread.providerSessionId !== null &&
+                detachedSessionIds.has(providerThread.providerSessionId),
+            )
+            .map((providerThread) => providerThread.id),
+        );
+        for (const item of pendingBackgroundTurnItems(workProjection)) {
+          const providerThreadId = item.providerThreadId ?? null;
+          if (providerThreadId === null || !detachedProviderThreadIds.has(providerThreadId))
+            continue;
+          const run = workProjection.runs.find((candidate) => candidate.id === item.runId);
+          yield* emit(
+            events,
+            command,
+          )({
+            type: "turn-item.updated",
+            threadId: command.threadId,
+            ...(item.runId === null ? {} : { runId: item.runId }),
+            ...(item.nodeId === null ? {} : { nodeId: item.nodeId }),
+            ...(run === undefined ? {} : { providerInstanceId: run.providerInstanceId }),
+            occurredAt: now,
+            payload: { ...item, status: "interrupted", completedAt: now, updatedAt: now },
+          });
+        }
+      }
     }
 
     if (command.type === "thread.archive") {
